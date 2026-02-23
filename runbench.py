@@ -1,0 +1,530 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import json
+import math
+import os
+import re
+import shutil
+import statistics
+import subprocess
+import sys
+import time
+from dataclasses import asdict, dataclass
+from pathlib import Path
+from typing import Iterable, NamedTuple
+
+
+@dataclass(frozen=True)
+class EngineVariant:
+    engine: str
+    runtime: str
+    mode: str
+    bin: str
+
+    @property
+    def key(self) -> str:
+        return f"{self.engine}:{self.runtime}:{self.mode}"
+
+
+@dataclass
+class RunResult:
+    engine: str
+    runtime: str
+    mode: str
+    wasm: str
+    ok: bool
+    rc: int
+    wall_ms: float
+    internal_ms: float | None
+    stdout_tail: str
+    stderr_tail: str
+
+
+TIME_PATTERNS: list[re.Pattern[str]] = [
+    re.compile(r"^Time:\s*(?P<ms>\d+(?:\.\d+)?)\s*ms\b", re.MULTILINE),
+    re.compile(r"^time:\s*(?P<ms>\d+(?:\.\d+)?)\s*ms\b", re.MULTILINE | re.IGNORECASE),
+]
+
+
+def extract_internal_ms(out: str) -> float | None:
+    for pat in TIME_PATTERNS:
+        m = pat.search(out)
+        if m:
+            try:
+                return float(m.group("ms"))
+            except Exception:
+                return None
+    return None
+
+
+def tail(s: str, max_chars: int = 800) -> str:
+    s = s.strip("\n")
+    if len(s) <= max_chars:
+        return s
+    return s[-max_chars:]
+
+
+def decode(b: bytes | str | None) -> str:
+    if b is None:
+        return ""
+    if isinstance(b, str):
+        return b
+    return b.decode("utf-8", errors="replace")
+
+
+class CmdOut(NamedTuple):
+    rc: int
+    wall_ms: float
+    out: str
+    err: str
+
+
+def run_one(cmd: list[str], cwd: Path, timeout_s: float) -> CmdOut:
+    t0 = time.perf_counter()
+    try:
+        cp = subprocess.run(
+            cmd,
+            cwd=str(cwd),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=False,
+            timeout=timeout_s,
+            check=False,
+        )
+        wall_ms = (time.perf_counter() - t0) * 1000.0
+        return CmdOut(cp.returncode, wall_ms, decode(cp.stdout), decode(cp.stderr))
+    except subprocess.TimeoutExpired as e:
+        wall_ms = (time.perf_counter() - t0) * 1000.0
+        return CmdOut(124, wall_ms, decode(e.stdout), decode(e.stderr))
+
+
+def geomean(values: Iterable[float]) -> float:
+    vals = [v for v in values if v > 0.0 and math.isfinite(v)]
+    if not vals:
+        return float("nan")
+    return math.exp(sum(math.log(v) for v in vals) / len(vals))
+
+
+def which_or(path: str | None, default: str) -> str | None:
+    if path:
+        return path
+    return shutil.which(default)
+
+
+def find_wasms(root: Path) -> list[Path]:
+    skip_parts = {".git", "__pycache__", ".venv", "logs", "cache"}
+    wasms: list[Path] = []
+    for p in root.rglob("*.wasm"):
+        if set(p.parts) & skip_parts:
+            continue
+        wasms.append(p)
+    return sorted(wasms)
+
+
+def wasm3_cmd(bin_path: str, wasm_rel: str, mode: str) -> list[str]:
+    cmd = [bin_path]
+    if mode == "full":
+        cmd.append("--compile")
+    cmd.append(wasm_rel)
+    return cmd
+
+
+def uwvm2_cmd(bin_path: str, wasm_rel: str, runtime: str, mode: str) -> list[str]:
+    return [
+        bin_path,
+        "-Rcc",
+        runtime,
+        "-Rcm",
+        mode,
+        "-I1dir",
+        ".",
+        ".",
+        "--",
+        wasm_rel,
+    ]
+
+
+def wamr_cmd(bin_path: str, wasm_rel: str) -> list[str]:
+    # The provided WAMR iwasm build (fastinterp) uses a minimal CLI: -f <wasm> -d <dir>
+    return [bin_path, "-f", wasm_rel, "-d", "."]
+
+
+def wasmtime_cmd(bin_path: str, wasm_rel: str) -> list[str]:
+    return [bin_path, "run", "--dir", ".", wasm_rel]
+
+
+def wasmer_cmd(bin_path: str, wasm_rel: str) -> list[str]:
+    return [bin_path, "run", "--dir", ".", wasm_rel]
+
+
+def wasmedge_cmd(bin_path: str, wasm_rel: str) -> list[str]:
+    # WasmEdge uses guest:host mapping; ".:." is safe (same either way).
+    return [bin_path, "--dir", ".:.", wasm_rel]
+
+
+def wavm_cmd(bin_path: str, wasm_rel: str) -> list[str]:
+    # WAVM's WASI flags differ across builds; this is a best-effort default.
+    return [bin_path, "run", "--preopen-dir", ".", wasm_rel]
+
+
+def supported_variants(
+    *,
+    engine: str,
+    bin_path: str,
+    runtimes: list[str],
+    modes: list[str],
+) -> list[EngineVariant]:
+    variants: list[EngineVariant] = []
+
+    # NOTE: be conservative. If we can't *control* a dimension, mark it unsupported.
+    if engine == "wasm3":
+        supp_r = {"int"}
+        supp_m = {"full", "lazy"}
+    elif engine == "uwvm2":
+        # Per policy: treat uwvm2 as not supporting jit here (even if the binary has the flag).
+        supp_r = {"int", "tiered"}
+        supp_m = {"full", "lazy"}
+    elif engine == "wamr":
+        supp_r = {"int"}
+        supp_m = {"full"}
+    elif engine == "wasmtime":
+        supp_r = {"jit"}
+        supp_m = {"full"}
+    elif engine == "wasmer":
+        supp_r = {"jit"}
+        supp_m = {"full"}
+    elif engine == "wasmedge":
+        supp_r = {"jit"}
+        supp_m = {"full"}
+    elif engine == "wavm":
+        supp_r = {"jit"}
+        supp_m = {"full"}
+    else:
+        raise ValueError(f"unknown engine: {engine}")
+
+    for r in runtimes:
+        if r not in supp_r:
+            continue
+        for m in modes:
+            if m not in supp_m:
+                continue
+            variants.append(EngineVariant(engine=engine, runtime=r, mode=m, bin=bin_path))
+    return variants
+
+
+def build_cmd(variant: EngineVariant, wasm_rel: str) -> list[str]:
+    eng = variant.engine
+    if eng == "wasm3":
+        return wasm3_cmd(variant.bin, wasm_rel, variant.mode)
+    if eng == "uwvm2":
+        return uwvm2_cmd(variant.bin, wasm_rel, variant.runtime, variant.mode)
+    if eng == "wamr":
+        return wamr_cmd(variant.bin, wasm_rel)
+    if eng == "wasmtime":
+        return wasmtime_cmd(variant.bin, wasm_rel)
+    if eng == "wasmer":
+        return wasmer_cmd(variant.bin, wasm_rel)
+    if eng == "wasmedge":
+        return wasmedge_cmd(variant.bin, wasm_rel)
+    if eng == "wavm":
+        return wavm_cmd(variant.bin, wasm_rel)
+    raise ValueError(f"unknown engine: {eng}")
+
+
+def summarize(results: list[RunResult], baseline_key: str) -> dict[str, object]:
+    by_key: dict[str, list[RunResult]] = {}
+    for r in results:
+        key = f"{r.engine}:{r.runtime}:{r.mode}"
+        by_key.setdefault(key, []).append(r)
+
+    # Compute per-config stats
+    stats: dict[str, dict[str, object]] = {}
+    for key, rs in sorted(by_key.items()):
+        ok = [r for r in rs if r.ok and r.wall_ms > 0.0 and math.isfinite(r.wall_ms)]
+        wall = [r.wall_ms for r in ok]
+        stats[key] = {
+            "ok": len(ok),
+            "total": len(rs),
+            "wall_ms_geomean": geomean(wall),
+            "wall_ms_median": statistics.median(wall) if wall else float("nan"),
+        }
+
+    # Ratios vs baseline (pairwise intersection for fairness)
+    base = {r.wasm: r for r in by_key.get(baseline_key, []) if r.ok}
+    ratios: dict[str, dict[str, object]] = {}
+    for key, rs in sorted(by_key.items()):
+        if key == baseline_key:
+            continue
+        cur = {r.wasm: r for r in rs if r.ok}
+        common = [w for w in base.keys() if w in cur]
+        pair = []
+        for w in common:
+            a = cur[w].wall_ms
+            b = base[w].wall_ms
+            if a > 0.0 and b > 0.0 and math.isfinite(a) and math.isfinite(b):
+                pair.append(a / b)
+        ratios[key] = {
+            "common_ok": len(common),
+            "wall_ratio_geomean": geomean(pair),
+            "wall_ratio_median": statistics.median(pair) if pair else float("nan"),
+        }
+
+    return {"stats": stats, "ratios_vs_baseline": ratios}
+
+
+def main(argv: list[str]) -> int:
+    ap = argparse.ArgumentParser()
+
+    # Engines
+    ap.add_argument("--add-wasm3", action="store_true")
+    ap.add_argument("--add-uwvm2", action="store_true")
+    ap.add_argument("--add-wamr", action="store_true")
+    ap.add_argument("--add-wasmtime", action="store_true")
+    ap.add_argument("--add-wasmer", action="store_true")
+    ap.add_argument("--add-wasmedge", action="store_true")
+    ap.add_argument("--add-wavm", action="store_true")
+
+    ap.add_argument("--wasm3-bin", default=None)
+    ap.add_argument("--uwvm2-bin", default=None)
+    ap.add_argument("--wamr-bin", default=None)
+    ap.add_argument("--wasmtime-bin", default=None)
+    ap.add_argument("--wasmer-bin", default=None)
+    ap.add_argument("--wasmedge-bin", default=None)
+    ap.add_argument("--wavm-bin", default=None)
+
+    # Filters
+    ap.add_argument("--runtime", action="append", choices=["int", "jit", "tiered"], default=[])
+    ap.add_argument("--mode", action="append", choices=["full", "lazy"], default=[])
+
+    # Corpus
+    ap.add_argument("--root", default="uwvm2bench", help="directory to scan for wasm files (relative to CWD ok)")
+    ap.add_argument("--timeout", type=float, default=25.0, help="timeout per run (seconds)")
+    ap.add_argument("--max-wasm", type=int, default=0, help="limit number of wasm files (0 = all)")
+
+    # Output
+    ap.add_argument("--out", default="logs/results.json")
+    ap.add_argument("--baseline", default="", help="baseline key, e.g. wasm3:int:full (default prefers wasm3:int:full)")
+
+    # Plot
+    ap.add_argument("--plot", action="store_true", help="render a bar chart (requires matplotlib)")
+    ap.add_argument("--plot-out", default="logs/plot.png")
+
+    args = ap.parse_args(argv)
+
+    selected_engines = [
+        ("wasm3", args.add_wasm3),
+        ("uwvm2", args.add_uwvm2),
+        ("wamr", args.add_wamr),
+        ("wasmtime", args.add_wasmtime),
+        ("wasmer", args.add_wasmer),
+        ("wasmedge", args.add_wasmedge),
+        ("wavm", args.add_wavm),
+    ]
+    selected = [name for name, on in selected_engines if on]
+    if not selected:
+        raise SystemExit("no engine selected: pass at least one --add-<engine> flag")
+    if not args.runtime:
+        raise SystemExit("no runtime selected: pass at least one --runtime={int,jit,tiered}")
+    if not args.mode:
+        raise SystemExit("no mode selected: pass at least one --mode={full,lazy}")
+
+    root = Path(args.root).resolve()
+    if not root.is_dir():
+        raise SystemExit(f"root not found: {root}")
+
+    wasms = find_wasms(root)
+    if args.max_wasm and args.max_wasm > 0:
+        wasms = wasms[: args.max_wasm]
+    if not wasms:
+        raise SystemExit(f"no wasm files found under: {root}")
+    probe_rel = os.path.relpath(wasms[0], root)
+
+    # Resolve binaries
+    bins: dict[str, str] = {}
+    wasm3_bin = which_or(args.wasm3_bin, "wasm3")
+    uwvm2_bin = which_or(args.uwvm2_bin, "uwvm")
+    wamr_bin = args.wamr_bin or "/Users/liyinan/Documents/MacroModel/src/wasm-micro-runtime/build/iwasm-fastinterp-clang/iwasm"
+    wasmtime_bin = which_or(args.wasmtime_bin, "wasmtime")
+    wasmer_bin = which_or(args.wasmer_bin, "wasmer")
+    wasmedge_bin = which_or(args.wasmedge_bin, "wasmedge")
+    wavm_bin = which_or(args.wavm_bin, "wavm")
+
+    if args.add_wasm3:
+        if not wasm3_bin:
+            raise SystemExit("wasm3 not found: pass --wasm3-bin or install wasm3 in PATH")
+        bins["wasm3"] = wasm3_bin
+    if args.add_uwvm2:
+        if not uwvm2_bin:
+            raise SystemExit("uwvm not found: pass --uwvm2-bin or install uwvm in PATH")
+        bins["uwvm2"] = uwvm2_bin
+    if args.add_wamr:
+        if not Path(wamr_bin).exists():
+            raise SystemExit(f"iwasm not found: {wamr_bin} (pass --wamr-bin)")
+        bins["wamr"] = wamr_bin
+    if args.add_wasmtime:
+        if not wasmtime_bin:
+            raise SystemExit("wasmtime not found: pass --wasmtime-bin or install wasmtime in PATH")
+        bins["wasmtime"] = wasmtime_bin
+    if args.add_wasmer:
+        if not wasmer_bin:
+            raise SystemExit("wasmer not found: pass --wasmer-bin or install wasmer in PATH")
+        bins["wasmer"] = wasmer_bin
+    if args.add_wasmedge:
+        if not wasmedge_bin:
+            raise SystemExit("wasmedge not found: pass --wasmedge-bin or install wasmedge in PATH")
+        bins["wasmedge"] = wasmedge_bin
+    if args.add_wavm:
+        if not wavm_bin:
+            raise SystemExit("wavm not found: pass --wavm-bin or install wavm in PATH")
+        bins["wavm"] = wavm_bin
+
+    # Build variants
+    variants: list[EngineVariant] = []
+    skipped: list[str] = []
+    for eng in selected:
+        vs = supported_variants(engine=eng, bin_path=bins[eng], runtimes=args.runtime, modes=args.mode)
+        if not vs:
+            skipped.append(eng)
+        variants.extend(vs)
+
+    # Preflight: drop variants that an engine explicitly reports as unsupported.
+    pruned: list[str] = []
+    kept: list[EngineVariant] = []
+    for v in variants:
+        if v.engine != "uwvm2":
+            kept.append(v)
+            continue
+
+        cp = run_one(build_cmd(v, probe_rel), root, min(args.timeout, 10.0))
+        msg = (cp.out + "\n" + cp.err).lower()
+        if cp.rc != 0 and "not currently supported" in msg:
+            pruned.append(v.key)
+            continue
+        kept.append(v)
+    variants = kept
+
+    if not variants:
+        raise SystemExit("no runnable engine variants after applying --runtime/--mode filters")
+
+    print(f"root: {root}")
+    print(f"wasm files: {len(wasms)}")
+    print("variants:")
+    for v in variants:
+        print(f"  - {v.key}  ({v.bin})")
+    if skipped:
+        print("skipped engines (no supported variants for current filters): " + ", ".join(skipped))
+    if pruned:
+        print("pruned variants (engine reported unsupported): " + ", ".join(pruned))
+    print("", flush=True)
+
+    baseline = args.baseline
+    if not baseline:
+        pref = "wasm3:int:full"
+        baseline = pref if any(v.key == pref for v in variants) else variants[0].key
+    if not any(v.key == baseline for v in variants):
+        raise SystemExit(f"baseline not present in variants: {baseline}")
+
+    results: list[RunResult] = []
+
+    total_runs = len(wasms) * len(variants)
+    run_idx = 0
+    for wasm_idx, wasm in enumerate(wasms, start=1):
+        rel = os.path.relpath(wasm, root)
+        print(f"[{wasm_idx}/{len(wasms)}] {rel}", flush=True)
+        for v in variants:
+            run_idx += 1
+            cmd = build_cmd(v, rel)
+            cp = run_one(cmd, root, args.timeout)
+            internal = extract_internal_ms(cp.out)
+            results.append(
+                RunResult(
+                    engine=v.engine,
+                    runtime=v.runtime,
+                    mode=v.mode,
+                    wasm=rel,
+                    ok=(cp.rc == 0),
+                    rc=cp.rc,
+                    wall_ms=cp.wall_ms,
+                    internal_ms=internal,
+                    stdout_tail=tail(cp.out),
+                    stderr_tail=tail(cp.err),
+                )
+            )
+
+    out_path = Path(args.out)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "meta": {
+            "root": str(root),
+            "timeout_s": args.timeout,
+            "count_wasm": len(wasms),
+            "variants": [asdict(v) for v in variants],
+            "baseline": baseline,
+            "date_epoch": time.time(),
+            "argv": sys.argv,
+        },
+        "results": [asdict(r) for r in results],
+    }
+    out_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+    summ = summarize(results, baseline)
+    print("\n=== Summary (wall-clock) ===")
+    print(f"baseline: {baseline}")
+    for key, s in summ["stats"].items():  # type: ignore[union-attr]
+        print(f"{key}: ok {s['ok']}/{s['total']}, geomean {s['wall_ms_geomean']:.3f} ms, median {s['wall_ms_median']:.3f} ms")
+    print("\n=== Ratios vs baseline (variant/baseline, lower is faster) ===")
+    for key, r in summ["ratios_vs_baseline"].items():  # type: ignore[union-attr]
+        print(
+            f"{key}: common_ok {r['common_ok']}, geomean {r['wall_ratio_geomean']:.4f}, median {r['wall_ratio_median']:.4f}"
+        )
+    print(f"\nwrote: {out_path}")
+
+    if args.plot:
+        try:
+            import matplotlib.pyplot as plt  # type: ignore[import-not-found]
+        except Exception as e:
+            print(f"plot skipped: matplotlib not available: {e}")
+            return 0
+
+        ratios = summ["ratios_vs_baseline"]  # type: ignore[assignment]
+        labels: list[str] = []
+        values: list[float] = []
+        for v in variants:
+            if v.key == baseline:
+                continue
+            rv = ratios.get(v.key)
+            if not rv:
+                continue
+            val = float(rv["wall_ratio_geomean"])
+            if math.isfinite(val) and val > 0:
+                labels.append(v.key)
+                values.append(val)
+
+        if labels:
+            order = sorted(range(len(labels)), key=lambda i: values[i])
+            labels = [labels[i] for i in order]
+            values = [values[i] for i in order]
+
+            fig_h = max(4.0, 0.35 * len(labels) + 1.0)
+            fig, ax = plt.subplots(figsize=(12, fig_h))
+            ax.barh(labels, values)
+            ax.axvline(1.0, color="black", linewidth=1.0)
+            ax.set_xlabel(f"geomean wall-time ratio vs baseline ({baseline})")
+            ax.set_title("u2bench ratios (lower is faster)")
+            ax.invert_yaxis()
+            fig.tight_layout()
+
+            plot_out = Path(args.plot_out)
+            plot_out.parent.mkdir(parents=True, exist_ok=True)
+            fig.savefig(plot_out)
+            print(f"plot: {plot_out}")
+        else:
+            print("plot skipped: no comparable ratios")
+
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))
