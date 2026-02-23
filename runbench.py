@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import os
@@ -38,6 +39,9 @@ class RunResult:
     rc: int
     wall_ms: float
     internal_ms: float | None
+    metric: str
+    metric_kind: str
+    metric_ms: float | None
     stdout_tail: str
     stderr_tail: str
 
@@ -49,13 +53,15 @@ TIME_PATTERNS: list[re.Pattern[str]] = [
 
 
 def extract_internal_ms(out: str) -> float | None:
+    last: float | None = None
     for pat in TIME_PATTERNS:
-        m = pat.search(out)
-        if m:
+        for m in pat.finditer(out):
             try:
-                return float(m.group("ms"))
+                last = float(m.group("ms"))
             except Exception:
-                return None
+                continue
+    if last is not None:
+        return last
     return None
 
 
@@ -191,7 +197,10 @@ def supported_variants(
         supp_m = {"full"}
     elif engine == "wasmtime":
         supp_r = {"jit"}
-        supp_m = {"full"}
+        # Mode semantics:
+        # - lazy: run the wasm directly (compilation happens on first run)
+        # - full: precompile (wasmtime compile) then run with --allow-precompiled
+        supp_m = {"full", "lazy"}
     elif engine == "wasmer":
         supp_r = {"jit"}
         supp_m = {"full"}
@@ -223,7 +232,11 @@ def build_cmd(variant: EngineVariant, wasm_rel: str) -> list[str]:
     if eng == "wamr":
         return wamr_cmd(variant.bin, wasm_rel)
     if eng == "wasmtime":
-        return wasmtime_cmd(variant.bin, wasm_rel)
+        # "full" is handled specially (precompile+run) in the main loop.
+        # For "lazy", run the wasm directly.
+        if variant.mode == "lazy":
+            return wasmtime_cmd(variant.bin, wasm_rel)
+        return [variant.bin, "run", "--dir", ".", wasm_rel]
     if eng == "wasmer":
         return wasmer_cmd(variant.bin, wasm_rel)
     if eng == "wasmedge":
@@ -233,7 +246,29 @@ def build_cmd(variant: EngineVariant, wasm_rel: str) -> list[str]:
     raise ValueError(f"unknown engine: {eng}")
 
 
-def summarize(results: list[RunResult], baseline_key: str) -> dict[str, object]:
+def _metric_value(r: RunResult, metric: str) -> float | None:
+    if metric == "wall":
+        return r.wall_ms
+    if metric == "internal":
+        return r.internal_ms
+    if metric == "auto":
+        return r.internal_ms if r.internal_ms is not None else r.wall_ms
+    raise ValueError(f"unknown metric: {metric}")
+
+
+def metric_kind_and_value(*, wall_ms: float, internal_ms: float | None, metric: str) -> tuple[str, float | None]:
+    if metric == "wall":
+        return ("wall", wall_ms)
+    if metric == "internal":
+        return ("internal", internal_ms)
+    if metric == "auto":
+        if internal_ms is not None:
+            return ("internal", internal_ms)
+        return ("wall", wall_ms)
+    raise ValueError(f"unknown metric: {metric}")
+
+
+def summarize(results: list[RunResult], baseline_key: str, *, metric: str) -> dict[str, object]:
     by_key: dict[str, list[RunResult]] = {}
     for r in results:
         key = f"{r.engine}:{r.runtime}:{r.mode}"
@@ -242,36 +277,97 @@ def summarize(results: list[RunResult], baseline_key: str) -> dict[str, object]:
     # Compute per-config stats
     stats: dict[str, dict[str, object]] = {}
     for key, rs in sorted(by_key.items()):
-        ok = [r for r in rs if r.ok and r.wall_ms > 0.0 and math.isfinite(r.wall_ms)]
-        wall = [r.wall_ms for r in ok]
+        vals: list[float] = []
+        ok_rc = 0
+        ok_metric = 0
+        for r in rs:
+            if not r.ok:
+                continue
+            ok_rc += 1
+            v = _metric_value(r, metric)
+            if v is None:
+                continue
+            if v > 0.0 and math.isfinite(v):
+                ok_metric += 1
+                vals.append(v)
         stats[key] = {
-            "ok": len(ok),
+            "ok_rc": ok_rc,
+            "ok_metric": ok_metric,
             "total": len(rs),
-            "wall_ms_geomean": geomean(wall),
-            "wall_ms_median": statistics.median(wall) if wall else float("nan"),
+            "ms_geomean": geomean(vals),
+            "ms_median": statistics.median(vals) if vals else float("nan"),
         }
 
     # Ratios vs baseline (pairwise intersection for fairness)
-    base = {r.wasm: r for r in by_key.get(baseline_key, []) if r.ok}
+    base_rs = [r for r in by_key.get(baseline_key, []) if r.ok]
+    base_vals: dict[str, float] = {}
+    for r in base_rs:
+        v = _metric_value(r, metric)
+        if v is None or not (v > 0.0 and math.isfinite(v)):
+            continue
+        base_vals[r.wasm] = v
     ratios: dict[str, dict[str, object]] = {}
     for key, rs in sorted(by_key.items()):
         if key == baseline_key:
             continue
-        cur = {r.wasm: r for r in rs if r.ok}
-        common = [w for w in base.keys() if w in cur]
-        pair = []
+        cur_vals: dict[str, float] = {}
+        for r in rs:
+            if not r.ok:
+                continue
+            v = _metric_value(r, metric)
+            if v is None or not (v > 0.0 and math.isfinite(v)):
+                continue
+            cur_vals[r.wasm] = v
+        common = [w for w in base_vals.keys() if w in cur_vals]
+        pair: list[float] = []
         for w in common:
-            a = cur[w].wall_ms
-            b = base[w].wall_ms
+            a = cur_vals[w]
+            b = base_vals[w]
             if a > 0.0 and b > 0.0 and math.isfinite(a) and math.isfinite(b):
                 pair.append(a / b)
         ratios[key] = {
             "common_ok": len(common),
-            "wall_ratio_geomean": geomean(pair),
-            "wall_ratio_median": statistics.median(pair) if pair else float("nan"),
+            "ratio_geomean": geomean(pair),
+            "ratio_median": statistics.median(pair) if pair else float("nan"),
         }
 
-    return {"stats": stats, "ratios_vs_baseline": ratios}
+    return {"metric": metric, "stats": stats, "ratios_vs_baseline": ratios}
+
+
+def wasmtime_precompile_path(root: Path, wasm_rel: str) -> Path:
+    wasm_path = (root / wasm_rel).resolve()
+    st = wasm_path.stat()
+    key = f"{wasm_rel}|{st.st_size}|{st.st_mtime_ns}".encode("utf-8", errors="strict")
+    h = hashlib.sha256(key).hexdigest()[:20]
+    out_dir = root / "cache" / "u2bench" / "wasmtime"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    return out_dir / f"{h}.cwasm"
+
+
+def run_wasmtime_full(bin_path: str, *, root: Path, wasm_rel: str, timeout_s: float) -> CmdOut:
+    out_path = wasmtime_precompile_path(root, wasm_rel)
+    compile_cmd = [bin_path, "compile", wasm_rel, "-o", str(out_path)]
+    run_cmd = [bin_path, "run", "--allow-precompiled", "--dir", ".", str(out_path)]
+
+    # Compile if missing.
+    compile_wall_ms = 0.0
+    compile_out = ""
+    compile_err = ""
+    if not out_path.exists():
+        cp_c = run_one(compile_cmd, root, timeout_s)
+        compile_wall_ms = cp_c.wall_ms
+        compile_out = cp_c.out
+        compile_err = cp_c.err
+        if cp_c.rc != 0:
+            return cp_c
+
+    cp_r = run_one(run_cmd, root, timeout_s)
+    return CmdOut(
+        cp_r.rc,
+        compile_wall_ms + cp_r.wall_ms,
+        cp_r.out,
+        (compile_out + "\n" + compile_err + "\n" + cp_r.err).strip("\n"),
+    )
 
 
 def main(argv: list[str]) -> int:
@@ -306,6 +402,12 @@ def main(argv: list[str]) -> int:
     # Output
     ap.add_argument("--out", default="logs/results.json")
     ap.add_argument("--baseline", default="", help="baseline key, e.g. wasm3:int:full (default prefers wasm3:int:full)")
+    ap.add_argument(
+        "--metric",
+        choices=["wall", "internal", "auto"],
+        default="auto",
+        help="metric for summary/ratios/plot: wall, internal (wasm-reported Time: .. ms), or auto (prefer internal, else wall)",
+    )
 
     # Plot
     ap.add_argument("--plot", action="store_true", help="render a bar chart (requires matplotlib)")
@@ -436,8 +538,13 @@ def main(argv: list[str]) -> int:
         for v in variants:
             run_idx += 1
             cmd = build_cmd(v, rel)
-            cp = run_one(cmd, root, args.timeout)
-            internal = extract_internal_ms(cp.out)
+            if v.engine == "wasmtime" and v.mode == "full":
+                cp = run_wasmtime_full(v.bin, root=root, wasm_rel=rel, timeout_s=args.timeout)
+            else:
+                cp = run_one(cmd, root, args.timeout)
+
+            internal = extract_internal_ms(cp.out + "\n" + cp.err)
+            metric_kind, metric_ms = metric_kind_and_value(wall_ms=cp.wall_ms, internal_ms=internal, metric=args.metric)
             results.append(
                 RunResult(
                     engine=v.engine,
@@ -448,6 +555,9 @@ def main(argv: list[str]) -> int:
                     rc=cp.rc,
                     wall_ms=cp.wall_ms,
                     internal_ms=internal,
+                    metric=args.metric,
+                    metric_kind=metric_kind,
+                    metric_ms=metric_ms,
                     stdout_tail=tail(cp.out),
                     stderr_tail=tail(cp.err),
                 )
@@ -462,6 +572,13 @@ def main(argv: list[str]) -> int:
             "count_wasm": len(wasms),
             "variants": [asdict(v) for v in variants],
             "baseline": baseline,
+            "metric": args.metric,
+            "metric_semantics": {
+                "wall_ms": "harness wall-clock time (includes engine startup/compilation overheads)",
+                "internal_ms": "wasm-reported time extracted from stdout/stderr via Time/time patterns (excludes host-side overheads)",
+                "metric": "metric requested for summary/ratios/plot; auto prefers internal_ms when available, else wall_ms",
+                "per_result": "each result includes metric_kind (wall|internal) and metric_ms (value used for this run under the chosen metric)",
+            },
             "date_epoch": time.time(),
             "argv": sys.argv,
         },
@@ -469,16 +586,22 @@ def main(argv: list[str]) -> int:
     }
     out_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
-    summ = summarize(results, baseline)
-    print("\n=== Summary (wall-clock) ===")
+    summ = summarize(results, baseline, metric=args.metric)
+    metric_label = args.metric
+    if args.metric == "auto":
+        metric_label = "auto (internal preferred)"
+
+    print(f"\n=== Summary ({metric_label}) ===")
     print(f"baseline: {baseline}")
     for key, s in summ["stats"].items():  # type: ignore[union-attr]
-        print(f"{key}: ok {s['ok']}/{s['total']}, geomean {s['wall_ms_geomean']:.3f} ms, median {s['wall_ms_median']:.3f} ms")
-    print("\n=== Ratios vs baseline (variant/baseline, lower is faster) ===")
-    for key, r in summ["ratios_vs_baseline"].items():  # type: ignore[union-attr]
         print(
-            f"{key}: common_ok {r['common_ok']}, geomean {r['wall_ratio_geomean']:.4f}, median {r['wall_ratio_median']:.4f}"
+            f"{key}: ok {s['ok_rc']}/{s['total']}, metric_ok {s['ok_metric']}/{s['total']}, "
+            f"geomean {s['ms_geomean']:.3f} ms, median {s['ms_median']:.3f} ms"
         )
+
+    print(f"\n=== Ratios vs baseline ({metric_label}, variant/baseline, lower is faster) ===")
+    for key, r in summ["ratios_vs_baseline"].items():  # type: ignore[union-attr]
+        print(f"{key}: common_ok {r['common_ok']}, geomean {r['ratio_geomean']:.4f}, median {r['ratio_median']:.4f}")
     print(f"\nwrote: {out_path}")
 
     if args.plot:
@@ -497,7 +620,7 @@ def main(argv: list[str]) -> int:
             rv = ratios.get(v.key)
             if not rv:
                 continue
-            val = float(rv["wall_ratio_geomean"])
+            val = float(rv["ratio_geomean"])
             if math.isfinite(val) and val > 0:
                 labels.append(v.key)
                 values.append(val)
@@ -511,8 +634,8 @@ def main(argv: list[str]) -> int:
             fig, ax = plt.subplots(figsize=(12, fig_h))
             ax.barh(labels, values)
             ax.axvline(1.0, color="black", linewidth=1.0)
-            ax.set_xlabel(f"geomean wall-time ratio vs baseline ({baseline})")
-            ax.set_title("u2bench ratios (lower is faster)")
+            ax.set_xlabel(f"geomean {metric_label} ratio vs baseline ({baseline})")
+            ax.set_title(f"u2bench ratios ({metric_label}, lower is faster)")
             ax.invert_yaxis()
             fig.tight_layout()
 
