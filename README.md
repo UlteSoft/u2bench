@@ -54,6 +54,29 @@ Notes:
   - `--mode=full` precompiles via `wasmtime compile` then runs with `wasmtime run --allow-precompiled` (cache under `<root>/cache/u2bench/wasmtime/`).
 - Most engines run with a WASI directory mapping of the current working directory (engine-specific).
 
+## MVP WASI corpus (C++ + WAT)
+
+This repo also includes a small, generated corpus under `wasm/corpus/`, built from sources in `wasm/src/` using:
+- `clang++ --target=wasm32-wasip1` + a WASI sysroot
+- `wat2wasm` (WABT)
+
+Build:
+
+```bash
+WASI_SYSROOT=/path/to/wasi-sysroot python3 wasm/build_corpus.py
+```
+
+Run it with internal timing (recommended):
+
+```bash
+python3 runbench.py \
+  --add-uwvm2 --add-wasm3 --add-wamr --add-wasmtime \
+  --runtime=int --runtime=jit --runtime=tiered \
+  --mode=full --mode=lazy \
+  --metric=internal \
+  --root wasm/corpus
+```
+
 ## Output
 
 - JSON results are written to `--out`.
