@@ -108,16 +108,43 @@ def main(argv: list[str]) -> int:
         )
 
     units: list[BuildUnit] = [
+        # WASI / syscalls
         BuildUnit(kind="cc", src=repo_root / "wasm/src/cc/wasi_clock_gettime.cc", out=out_root / "wasi/clock_gettime.wasm"),
         BuildUnit(kind="cc", src=repo_root / "wasm/src/cc/wasi_file_rw.cc", out=out_root / "wasi/file_rw_8m.wasm"),
+        BuildUnit(kind="cc", src=repo_root / "wasm/src/cc/wasi_small_io.cc", out=out_root / "wasi/small_io_64b_100k.wasm"),
+        BuildUnit(kind="cc", src=repo_root / "wasm/src/cc/wasi_open_close_stat.cc", out=out_root / "wasi/open_close_stat_20k.wasm"),
+        BuildUnit(kind="cc", src=repo_root / "wasm/src/cc/wasi_random_get.cc", out=out_root / "wasi/random_get_16m.wasm"),
+
+        # Crypto
         BuildUnit(kind="cc", src=repo_root / "wasm/src/cc/crypto_sha256.cc", out=out_root / "crypto/sha256.wasm"),
         BuildUnit(kind="cc", src=repo_root / "wasm/src/cc/crypto_chacha20.cc", out=out_root / "crypto/chacha20.wasm"),
+        BuildUnit(kind="cc", src=repo_root / "wasm/src/cc/crypto_aes128.cc", out=out_root / "crypto/aes128.wasm"),
+        BuildUnit(kind="cc", src=repo_root / "wasm/src/cc/crypto_crc32.cc", out=out_root / "crypto/crc32_4m_x8.wasm"),
+        BuildUnit(kind="cc", src=repo_root / "wasm/src/cc/crypto_siphash24.cc", out=out_root / "crypto/siphash24.wasm"),
+
+        # DB-ish workloads
         BuildUnit(kind="cc", src=repo_root / "wasm/src/cc/db_kv_hash.cc", out=out_root / "db/kv_hash.wasm"),
+        BuildUnit(kind="cc", src=repo_root / "wasm/src/cc/db_radix_sort_u64.cc", out=out_root / "db/radix_sort_u64_200k.wasm"),
+        BuildUnit(kind="cc", src=repo_root / "wasm/src/cc/db_bloom_filter.cc", out=out_root / "db/bloom_filter.wasm"),
+
+        # VM / interpreter-ish
         BuildUnit(kind="cc", src=repo_root / "wasm/src/cc/vm_tinybytecode.cc", out=out_root / "vm/mini_lua_like_vm.wasm"),
+        BuildUnit(kind="cc", src=repo_root / "wasm/src/cc/vm_minilua_table_vm.cc", out=out_root / "vm/minilua_table_vm.wasm"),
+        BuildUnit(kind="cc", src=repo_root / "wasm/src/cc/vm_expr_parser.cc", out=out_root / "vm/expr_parser.wasm"),
+
+        # Science / compute
         BuildUnit(kind="cc", src=repo_root / "wasm/src/cc/science_matmul_i32.cc", out=out_root / "science/matmul_i32.wasm"),
         BuildUnit(kind="cc", src=repo_root / "wasm/src/cc/science_matmul_f64.cc", out=out_root / "science/matmul_f64.wasm"),
         BuildUnit(kind="cc", src=repo_root / "wasm/src/cc/science_sieve_i32.cc", out=out_root / "science/sieve_i32_2m.wasm"),
+        BuildUnit(kind="cc", src=repo_root / "wasm/src/cc/science_gcd_i64.cc", out=out_root / "science/gcd_i64.wasm"),
+        BuildUnit(kind="cc", src=repo_root / "wasm/src/cc/science_daxpy_f64.cc", out=out_root / "science/daxpy_f64.wasm"),
+        BuildUnit(kind="cc", src=repo_root / "wasm/src/cc/science_mandelbrot_f64.cc", out=out_root / "science/mandelbrot_f64.wasm"),
+        BuildUnit(kind="cc", src=repo_root / "wasm/src/cc/science_nbody_f64.cc", out=out_root / "science/nbody_f64.wasm"),
+
+        # Microbenches (WAT, no libc)
         BuildUnit(kind="wat", src=repo_root / "wasm/src/wat/loop_i32.wat", out=out_root / "micro/loop_i32.wasm"),
+        BuildUnit(kind="wat", src=repo_root / "wasm/src/wat/loop_f64.wat", out=out_root / "micro/loop_f64.wasm"),
+        BuildUnit(kind="wat", src=repo_root / "wasm/src/wat/mem_sum_i32.wat", out=out_root / "micro/mem_sum_i32.wasm"),
     ]
 
     built = 0
