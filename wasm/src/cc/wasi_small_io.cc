@@ -86,10 +86,14 @@ int main() {
     const uint64_t t1 = u2bench_now_ns();
 
     close(fd);
-    (void)unlink(path);
+    {
+        const int fd2 = open(path, O_WRONLY | O_TRUNC, 0644);
+        if (fd2 >= 0) {
+            close(fd2);
+        }
+    }
 
     u2bench_sink_u64(sum);
     u2bench_print_time_ns(t1 - t0);
     return 0;
 }
-

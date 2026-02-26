@@ -165,9 +165,14 @@ def wasmer_cmd(bin_path: str, wasm_rel: str) -> list[str]:
     return [bin_path, "run", "--dir", ".", wasm_rel]
 
 
-def wasmedge_cmd(bin_path: str, wasm_rel: str) -> list[str]:
+def wasmedge_cmd(bin_path: str, wasm_rel: str, runtime: str) -> list[str]:
     # WasmEdge uses guest:host mapping; ".:." is safe (same either way).
-    return [bin_path, "--dir", ".:.", wasm_rel]
+    cmd = [bin_path, "--dir", ".:.", wasm_rel]
+    if runtime == "jit":
+        return [bin_path, "--enable-jit", "--dir", ".:.", wasm_rel]
+    if runtime == "int":
+        return [bin_path, "--force-interpreter", "--dir", ".:.", wasm_rel]
+    raise ValueError(f"unsupported wasmedge runtime: {runtime}")
 
 
 def wavm_cmd(bin_path: str, wasm_rel: str) -> list[str]:
@@ -205,7 +210,7 @@ def supported_variants(
         supp_r = {"jit"}
         supp_m = {"full"}
     elif engine == "wasmedge":
-        supp_r = {"jit"}
+        supp_r = {"int", "jit"}
         supp_m = {"full"}
     elif engine == "wavm":
         supp_r = {"jit"}
@@ -240,7 +245,7 @@ def build_cmd(variant: EngineVariant, wasm_rel: str) -> list[str]:
     if eng == "wasmer":
         return wasmer_cmd(variant.bin, wasm_rel)
     if eng == "wasmedge":
-        return wasmedge_cmd(variant.bin, wasm_rel)
+        return wasmedge_cmd(variant.bin, wasm_rel, variant.runtime)
     if eng == "wavm":
         return wavm_cmd(variant.bin, wasm_rel)
     raise ValueError(f"unknown engine: {eng}")

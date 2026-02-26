@@ -16,3 +16,8 @@ cache/
 *.svg
 *.csv
 
+# macOS
+.DS_Store
+
+# WASI bench runtime artifacts
+wasm/corpus/u2bench_*
