@@ -286,7 +286,7 @@ def wasmedge_cmd(bin_path: str, wasm_rel: str, runtime: str) -> list[str]:
 
 def wavm_cmd(bin_path: str, wasm_rel: str) -> list[str]:
     # WAVM's WASI flags differ across builds; this is a best-effort default.
-    return [bin_path, "run", "--preopen-dir", ".", wasm_rel]
+    return [bin_path, "run", "--mount-root", ".", wasm_rel]
 
 
 def supported_variants(
