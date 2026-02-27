@@ -42,7 +42,7 @@ At least one engine+runtime+mode combination must remain, otherwise the run abor
   - Useful for “tiny wasm” experiments.
   - Most modules **do not** print `Time: ...`, so `--metric=internal` won’t work reliably here (use `--metric=wall` or `--metric=auto`).
 
-## Fairness / 公平公正
+## Fairness
 
 This suite aims to avoid bias toward any specific VM/engine:
 
