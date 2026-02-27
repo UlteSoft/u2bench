@@ -146,6 +146,7 @@ def main(argv: list[str]) -> int:
         BuildUnit(kind="cc", src=repo_root / "wasm/src/cc/crypto_blake2s.cc", out=out_root / "crypto/blake2s.wasm"),
         BuildUnit(kind="cc", src=repo_root / "wasm/src/cc/crypto_blake2b.cc", out=out_root / "crypto/blake2b.wasm"),
         BuildUnit(kind="cc", src=repo_root / "wasm/src/cc/crypto_poly1305.cc", out=out_root / "crypto/poly1305_1m_x10.wasm"),
+        BuildUnit(kind="cc", src=repo_root / "wasm/src/cc/crypto_keccakf1600.cc", out=out_root / "crypto/keccakf1600.wasm"),
 
         # DB-ish workloads
         BuildUnit(kind="cc", src=repo_root / "wasm/src/cc/db_kv_hash.cc", out=out_root / "db/kv_hash.wasm"),
@@ -175,6 +176,7 @@ def main(argv: list[str]) -> int:
 
         # Microbenches (C++/libc)
         BuildUnit(kind="cc", src=repo_root / "wasm/src/cc/micro_pointer_chase_u32.cc", out=out_root / "micro/pointer_chase_u32_1m.wasm"),
+        BuildUnit(kind="cc", src=repo_root / "wasm/src/cc/micro_pointer_chase_u64.cc", out=out_root / "micro/pointer_chase_u64_4m.wasm"),
         BuildUnit(kind="cc", src=repo_root / "wasm/src/cc/micro_bitops_i32_mix.cc", out=out_root / "micro/bitops_i32_mix.wasm"),
         BuildUnit(kind="cc", src=repo_root / "wasm/src/cc/micro_bitops_i64_mix.cc", out=out_root / "micro/bitops_i64_mix.wasm"),
         BuildUnit(kind="cc", src=repo_root / "wasm/src/cc/micro_divrem_i64.cc", out=out_root / "micro/divrem_i64.wasm"),
@@ -193,12 +195,16 @@ def main(argv: list[str]) -> int:
         BuildUnit(kind="cc", src=repo_root / "wasm/src/cc/micro_memset_libc_u8.cc", out=out_root / "micro/mem_set_libc_u8_4m_x32.wasm"),
         BuildUnit(kind="cc", src=repo_root / "wasm/src/cc/micro_memchr_libc_u8.cc", out=out_root / "micro/mem_chr_libc_u8_4m_x32.wasm"),
         BuildUnit(kind="cc", src=repo_root / "wasm/src/cc/micro_mem_hist_u8.cc", out=out_root / "micro/mem_hist_u8_4m_x16.wasm"),
+        BuildUnit(kind="cc", src=repo_root / "wasm/src/cc/micro_reg_pressure_i32.cc", out=out_root / "micro/reg_pressure_i32_20m.wasm"),
+        BuildUnit(kind="cc", src=repo_root / "wasm/src/cc/micro_reg_pressure_f32.cc", out=out_root / "micro/reg_pressure_f32_12m.wasm"),
         BuildUnit(kind="cc", src=repo_root / "wasm/src/cc/micro_reg_pressure_i64.cc", out=out_root / "micro/reg_pressure_i64_10m.wasm"),
         BuildUnit(kind="cc", src=repo_root / "wasm/src/cc/micro_reg_pressure_f64.cc", out=out_root / "micro/reg_pressure_f64_5m.wasm"),
         BuildUnit(kind="cc", src=repo_root / "wasm/src/cc/micro_indirect_call_i32.cc", out=out_root / "micro/call_indirect_i32_cpp_4m.wasm"),
         BuildUnit(kind="cc", src=repo_root / "wasm/src/cc/micro_control_flow_dense_predictable_i32.cc", out=out_root / "micro/control_flow_dense_predictable_i32_50m.wasm"),
         BuildUnit(kind="cc", src=repo_root / "wasm/src/cc/micro_big_switch_i32.cc", out=out_root / "micro/big_switch_i32_10m.wasm"),
         BuildUnit(kind="cc", src=repo_root / "wasm/src/cc/micro_random_access_u32.cc", out=out_root / "micro/random_access_u32_16m.wasm"),
+        BuildUnit(kind="cc", src=repo_root / "wasm/src/cc/micro_trig_mix_f64.cc", out=out_root / "micro/trig_mix_f64_200k.wasm"),
+        BuildUnit(kind="cc", src=repo_root / "wasm/src/cc/micro_quicksort_i32.cc", out=out_root / "micro/quicksort_i32_200k_x3.wasm"),
         BuildUnit(kind="cc", src=repo_root / "wasm/src/cc/micro_mul_add_i32.cc", out=out_root / "micro/mul_add_i32_50m.wasm"),
         BuildUnit(kind="cc", src=repo_root / "wasm/src/cc/micro_int128_mul_u64.cc", out=out_root / "micro/int128_mul_u64_2m.wasm"),
         BuildUnit(kind="cc", src=repo_root / "wasm/src/cc/micro_memcpy_libc_u8.cc", out=out_root / "micro/mem_copy_libc_u8_4m_x32.wasm"),
@@ -228,7 +234,10 @@ def main(argv: list[str]) -> int:
         BuildUnit(kind="wat", src=repo_root / "wasm/src/wat/mem_load_store_i64.wat", out=out_root / "micro/mem_load_store_i64.wasm"),
         BuildUnit(kind="wat", src=repo_root / "wasm/src/wat/mem_unaligned_i64.wat", out=out_root / "micro/mem_unaligned_i64.wasm"),
         BuildUnit(kind="wat", src=repo_root / "wasm/src/wat/global_dense_i32.wat", out=out_root / "micro/global_dense_i32.wasm"),
+        BuildUnit(kind="wat", src=repo_root / "wasm/src/wat/global_dense_i64.wat", out=out_root / "micro/global_dense_i64.wasm"),
+        BuildUnit(kind="wat", src=repo_root / "wasm/src/wat/global_dense_f64.wat", out=out_root / "micro/global_dense_f64.wasm"),
         BuildUnit(kind="wat", src=repo_root / "wasm/src/wat/select_dense_i32.wat", out=out_root / "micro/select_dense_i32.wasm"),
+        BuildUnit(kind="wat", src=repo_root / "wasm/src/wat/select_dense_i64.wat", out=out_root / "micro/select_dense_i64.wasm"),
         BuildUnit(kind="wat", src=repo_root / "wasm/src/wat/local_dense_i32.wat", out=out_root / "micro/local_dense_i32.wasm"),
         BuildUnit(kind="wat", src=repo_root / "wasm/src/wat/local_dense_i64.wat", out=out_root / "micro/local_dense_i64.wasm"),
         BuildUnit(kind="wat", src=repo_root / "wasm/src/wat/local_dense_f32.wat", out=out_root / "micro/local_dense_f32.wasm"),

@@ -118,6 +118,8 @@ python3 runbench.py \
 - The summary prints geomean/median wall-time per engine-config and ratios vs a baseline.
 - `--plot` draws a bar chart of geomean ratios vs baseline (optional dependency: `matplotlib`).
   - If `matplotlib` is missing, the run still completes and plot is skipped.
+- `--plot-per-wasm` renders **one plot per wasm benchmark**, grouped by `bench_kind`, and writes an `index.html` under `--plot-dir`.
+  - Bar color shows which timing source was used for that result: **blue = internal**, **red = wall**.
 
 ## Custom engine paths
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import html
 import json
 import math
 import os
@@ -368,6 +369,10 @@ def classify_bench(wasm_rel: str) -> tuple[str, list[str]]:
             tags.add("control_flow_dense")
             return ret("control_flow_dense")
         if "json" in name:
+            tags.add("control_flow_dense")
+            tags.add("memory_dense")
+            return ret("control_flow_dense")
+        if "quicksort" in name or "qsort" in name:
             tags.add("control_flow_dense")
             tags.add("memory_dense")
             return ret("control_flow_dense")
@@ -782,6 +787,8 @@ def main(argv: list[str]) -> int:
     # Plot
     ap.add_argument("--plot", action="store_true", help="render a bar chart (requires matplotlib)")
     ap.add_argument("--plot-out", default="logs/plot.png")
+    ap.add_argument("--plot-per-wasm", action="store_true", help="render one plot per wasm benchmark (grouped by bench_kind)")
+    ap.add_argument("--plot-dir", default="logs/plots", help="output directory for --plot-per-wasm")
 
     args = ap.parse_args(argv)
 
@@ -1095,6 +1102,135 @@ def main(argv: list[str]) -> int:
             print(f"plot: {plot_out}")
         else:
             print("plot skipped: no comparable ratios")
+
+    if args.plot_per_wasm:
+        try:
+            import matplotlib.pyplot as plt  # type: ignore[import-not-found]
+            from matplotlib.patches import Patch  # type: ignore[import-not-found]
+        except Exception as e:
+            print(f"plot-per-wasm skipped: matplotlib not available: {e}")
+            return 0
+
+        def sanitize_artifact_name(rel: str) -> str:
+            s = rel.replace("\\", "/")
+            s = s.replace("/", "__")
+            s = re.sub(r"[^A-Za-z0-9._-]+", "_", s)
+            s = s.strip("._-")
+            if len(s) <= 160:
+                return s
+            h = hashlib.sha256(rel.encode("utf-8", errors="strict")).hexdigest()[:12]
+            return s[:140] + "_" + h
+
+        plot_root = Path(args.plot_dir)
+        plot_root.mkdir(parents=True, exist_ok=True)
+
+        by_wasm: dict[str, list[RunResult]] = {}
+        for r in results:
+            by_wasm.setdefault(r.wasm, []).append(r)
+
+        kind_to_items: dict[str, list[tuple[str, str, list[str], str]]] = {}
+
+        for wasm_rel, rs in sorted(by_wasm.items()):
+            bench_kind = rs[0].bench_kind if rs else "unknown"
+            bench_tags = rs[0].bench_tags if rs else []
+
+            # Aggregate per variant (median metric_ms).
+            per_key: dict[str, list[RunResult]] = {}
+            for r in rs:
+                key = variant_key(engine=r.engine, runtime=r.runtime, mode=r.mode, label=r.label)
+                per_key.setdefault(key, []).append(r)
+
+            bars: list[tuple[str, float, str]] = []
+            for key, items in sorted(per_key.items()):
+                vals: list[float] = []
+                kinds: set[str] = set()
+                for r in items:
+                    if not r.ok:
+                        continue
+                    if r.metric_ms is None or not (r.metric_ms > 0.0 and math.isfinite(r.metric_ms)):
+                        continue
+                    vals.append(float(r.metric_ms))
+                    kinds.add(r.metric_kind)
+                if not vals:
+                    continue
+                v = float(statistics.median(vals))
+                k = next(iter(kinds)) if len(kinds) == 1 else "mixed"
+                bars.append((key, v, k))
+
+            if not bars:
+                continue
+
+            bars.sort(key=lambda t: t[1])
+            labels = [b[0] for b in bars]
+            values = [b[1] for b in bars]
+            kinds = [b[2] for b in bars]
+
+            colors: list[str] = []
+            for k in kinds:
+                if k == "internal":
+                    colors.append("tab:blue")
+                elif k == "wall":
+                    colors.append("tab:red")
+                else:
+                    colors.append("tab:purple")
+
+            fig_h = max(3.0, 0.35 * len(labels) + 1.2)
+            fig, ax = plt.subplots(figsize=(12, fig_h))
+            ax.barh(labels, values, color=colors)
+            ax.set_xlabel(f"{args.metric} time (ms) — blue=internal, red=wall")
+            ax.set_title(f"{wasm_rel}  [{bench_kind}]")
+            ax.invert_yaxis()
+
+            handles: list[Patch] = []
+            if "tab:blue" in colors:
+                handles.append(Patch(color="tab:blue", label="internal (guest Time/Elapsed)"))
+            if "tab:red" in colors:
+                handles.append(Patch(color="tab:red", label="wall (harness)"))
+            if "tab:purple" in colors:
+                handles.append(Patch(color="tab:purple", label="mixed"))
+            if handles:
+                ax.legend(handles=handles, loc="lower right")
+
+            fig.tight_layout()
+
+            out_dir = plot_root / bench_kind
+            out_dir.mkdir(parents=True, exist_ok=True)
+            img_name = sanitize_artifact_name(wasm_rel) + ".png"
+            img_path = out_dir / img_name
+            fig.savefig(img_path)
+            plt.close(fig)
+
+            rel_img = f"{bench_kind}/{img_name}"
+            kind_to_items.setdefault(bench_kind, []).append((wasm_rel, rel_img, bench_tags, args.metric))
+
+        # Simple HTML index grouped by bench_kind.
+        idx = plot_root / "index.html"
+        parts: list[str] = []
+        parts.append("<!doctype html>")
+        parts.append('<html><head><meta charset="utf-8"><title>u2bench plots</title></head><body>')
+        parts.append("<h1>u2bench per-benchmark plots</h1>")
+        parts.append(
+            "<p>Bar color encodes the <code>metric_kind</code> used for that result: "
+            "<span style='color:#1f77b4'>blue=internal</span>, <span style='color:#d62728'>red=wall</span>.</p>"
+        )
+        parts.append(f"<p>metric: <code>{html.escape(args.metric)}</code></p>")
+
+        for bench_kind in sorted(kind_to_items.keys()):
+            parts.append(f"<h2>{html.escape(bench_kind)}</h2>")
+            parts.append("<ul>")
+            for wasm_rel, rel_img, bench_tags, _m in sorted(kind_to_items[bench_kind], key=lambda t: t[0]):
+                tag_s = ", ".join(bench_tags)
+                parts.append(
+                    "<li>"
+                    f"<a href=\"{html.escape(rel_img)}\">{html.escape(wasm_rel)}</a>"
+                    f" <small>({html.escape(tag_s)})</small>"
+                    "</li>"
+                )
+            parts.append("</ul>")
+
+        parts.append("</body></html>")
+        idx.write_text("\n".join(parts) + "\n", encoding="utf-8")
+        print(f"plot-per-wasm: {idx}")
 
     return 0
 

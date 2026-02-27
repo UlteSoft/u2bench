@@ -50,6 +50,7 @@ so `runbench.py --metric=internal` can compare engines while minimizing host-sid
 - `crypto_blake2s.cc`: BLAKE2s compression rounds (32-bit-heavy crypto).
 - `crypto_blake2b.cc`: BLAKE2b compression rounds (64-bit-heavy crypto).
 - `crypto_poly1305.cc`: Poly1305 authenticator over a 1 MiB message (integer-heavy MAC).
+- `crypto_keccakf1600.cc`: Keccak-f[1600] permutation rounds (SHA-3 style 64-bit rotates/xors).
 - `db_kv_hash.cc`: in-memory open-addressing KV hash table (puts/gets, hits+misses).
 - `db_radix_sort_u64.cc`: radix sort 200k u64 values.
 - `db_bloom_filter.cc`: Bloom filter insert + membership queries.
@@ -71,6 +72,7 @@ so `runbench.py --metric=internal` can compare engines while minimizing host-sid
 - `science_black_scholes_f64.cc`: Black-Scholes (exp/log/sqrt + normal CDF approx).
 - `science_kmeans_f32.cc`: k-means clustering (float compute + memory).
 - `micro_pointer_chase_u32.cc`: pointer-chase / dependent-load loop (memory latency-ish).
+- `micro_pointer_chase_u64.cc`: pointer-chase / dependent-load loop using 64-bit loads (memory latency-ish).
 - `micro_bitops_i32_mix.cc`: i32 bit operations (`popcount`/`clz`/`ctz`/rotates).
 - `micro_bitops_i64_mix.cc`: i64 bit operations mix (`popcount`/`clz`/`ctz`/rotates).
 - `micro_divrem_i64.cc`: i64 division+remainder heavy loop.
@@ -90,6 +92,8 @@ so `runbench.py --metric=internal` can compare engines while minimizing host-sid
 - `micro_memchr_libc_u8.cc`: libc `memchr` scan (byte search; match at end).
 - `micro_mem_hist_u8.cc`: byte histogram over a 4 MiB buffer (memory + scattered updates).
 - `micro_reg_pressure_i64.cc`: many live i64 locals updated in a tight loop (register pressure-ish).
+- `micro_reg_pressure_i32.cc`: many live i32 locals updated in a tight loop (register pressure-ish).
+- `micro_reg_pressure_f32.cc`: many live f32 locals updated in a tight loop (register pressure-ish).
 - `micro_reg_pressure_f64.cc`: many live f64 locals updated in a tight loop (register pressure-ish).
 - `micro_indirect_call_i32.cc`: function-pointer / indirect call overhead (call_indirect style).
 - `micro_control_flow_dense_predictable_i32.cc`: branch-heavy loop with predictable branching.
@@ -100,6 +104,8 @@ so `runbench.py --metric=internal` can compare engines while minimizing host-sid
 - `micro_memcpy_libc_u8.cc`: libc `memcpy` throughput (memory bandwidth + stores).
 - `micro_memcpy_small_64b.cc`: many small `memcpy` calls (64B blocks) with a small working set.
 - `micro_memmove_libc_u8.cc`: libc `memmove` on overlapping regions (forward + backward copies).
+- `micro_trig_mix_f64.cc`: libm `sin`/`cos` heavy loop (float compute + call overhead).
+- `micro_quicksort_i32.cc`: comparison sort (branch/control-flow heavy).
 
 ### WAT (`wasm/src/wat/`)
 
@@ -125,7 +131,10 @@ so `runbench.py --metric=internal` can compare engines while minimizing host-sid
 - `mem_load_store_i64.wat`: aligned i64 load/store over a 1 MiB region.
 - `mem_unaligned_i64.wat`: misaligned i64 load/store over a 1 MiB region (`align=1`).
 - `global_dense_i32.wat`: `global.get`/`global.set` dense loop.
+- `global_dense_i64.wat`: `global.get`/`global.set` dense loop (i64 globals).
+- `global_dense_f64.wat`: `global.get`/`global.set` dense loop (f64 globals).
 - `select_dense_i32.wat`: `select` instruction dense loop (branchless-ish).
+- `select_dense_i64.wat`: `select` instruction dense loop (i64).
 - `local_dense_i32.wat`: `local.get`/`local.set` heavy loop.
 - `local_dense_i64.wat`: `local.get`/`local.set` heavy loop (i64 locals).
 - `local_dense_f32.wat`: `local.get`/`local.set` heavy loop (f32 locals).
