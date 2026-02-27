@@ -145,6 +145,11 @@ def main(argv: list[str]) -> int:
         BuildUnit(kind="wat", src=repo_root / "wasm/src/wat/loop_i32.wat", out=out_root / "micro/loop_i32.wasm"),
         BuildUnit(kind="wat", src=repo_root / "wasm/src/wat/loop_f64.wat", out=out_root / "micro/loop_f64.wasm"),
         BuildUnit(kind="wat", src=repo_root / "wasm/src/wat/mem_sum_i32.wat", out=out_root / "micro/mem_sum_i32.wasm"),
+        BuildUnit(kind="wat", src=repo_root / "wasm/src/wat/mem_fill_i32.wat", out=out_root / "micro/mem_fill_i32.wasm"),
+        BuildUnit(kind="wat", src=repo_root / "wasm/src/wat/local_dense_i32.wat", out=out_root / "micro/local_dense_i32.wasm"),
+        BuildUnit(kind="wat", src=repo_root / "wasm/src/wat/operand_stack_dense_i32.wat", out=out_root / "micro/operand_stack_dense_i32.wasm"),
+        BuildUnit(kind="wat", src=repo_root / "wasm/src/wat/call_dense_i32.wat", out=out_root / "micro/call_dense_i32.wasm"),
+        BuildUnit(kind="wat", src=repo_root / "wasm/src/wat/control_flow_dense_i32.wat", out=out_root / "micro/control_flow_dense_i32.wasm"),
     ]
 
     built = 0

@@ -44,3 +44,8 @@ so `runbench.py --metric=internal` can compare engines while minimizing host-sid
 - `loop_i32.wat`: hand-written tight loop micro-benchmark + WASI timing + `fd_write` output.
 - `loop_f64.wat`: hand-written float loop micro-benchmark.
 - `mem_sum_i32.wat`: memory read bandwidth (sum 1 MiB of i32s for many reps).
+- `mem_fill_i32.wat`: memory write bandwidth (store 1 MiB of i32s for many reps).
+- `local_dense_i32.wat`: `local.get`/`local.set` heavy loop.
+- `operand_stack_dense_i32.wat`: deep operand-stack push/reduce loop.
+- `call_dense_i32.wat`: indirect call overhead micro-benchmark.
+- `control_flow_dense_i32.wat`: branch-heavy control-flow micro-benchmark.

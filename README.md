@@ -32,17 +32,49 @@ Minimal, CLI-driven wasm benchmark harness to compare multiple engines under the
 If a runtime/mode is not supported by an engine, that combination is skipped.
 At least one engine+runtime+mode combination must remain, otherwise the run aborts.
 
+## Corpus layout
+
+- **Recommended (fair, internal timing):** `wasm/corpus/`
+  - Built from `wasm/src/` (C++ + WAT) via `wasm/build_corpus.py`.
+  - Every benchmark prints `Time: <ms> ms` measured *inside* the wasm guest using WASI clocks.
+  - Includes a balanced mix of compute/memory/control-flow/call/locals/operand-stack + WASI syscalls/I/O, plus crypto/db/vm/science workloads.
+- **Legacy microbenches (flat, extreme few-variables):** `legacy_minvar_microbenches/`
+  - Useful for “tiny wasm” experiments.
+  - Most modules **do not** print `Time: ...`, so `--metric=internal` won’t work reliably here (use `--metric=wall` or `--metric=auto`).
+
+## Fairness / 公平公正
+
+This suite aims to avoid bias toward any specific VM/engine:
+
+- **Same wasm binaries across engines:** u2bench runs the same `.wasm` corpus for every engine variant (no per-engine rebuilds).
+- **Internal timing option:** for `wasm/corpus/`, time is measured inside the guest via WASI clocks, reducing host-side noise (process startup, scheduler jitter, harness overhead).
+- **Steady-state vs end-to-end:** use `--metric=internal` to focus on execution; use `--metric=wall` when you *want* to include compilation/startup overheads.
+- **Compatibility-first corpus:** the generated corpus targets `wasm32-wasip1` and disables newer proposals (bulk-memory, sign-ext, multi-value, ref-types, …) to keep the workload comparable across engines.
+- **Intersection-based ratios:** ratios vs baseline are computed on the **common** subset where both variants produced a valid metric, avoiding “missing benchmark” bias.
+- **Workload diversity:** covers IO/syscall/memory/local/operand-stack/call/control-flow, plus integer-heavy and float-heavy programs (filterable via tags like `int_dense` / `float_dense`).
+
+Coverage cheat-sheet (examples from `wasm/corpus/`):
+- `io_dense`: `wasi/file_rw_8m.wasm`, `wasi/small_io_64b_100k.wasm`
+- `syscall_dense`: `wasi/clock_gettime.wasm`, `wasi/open_close_stat_20k.wasm`, `wasi/random_get_16m.wasm`
+- `memory_dense`: `micro/mem_sum_i32.wasm`, `micro/mem_fill_i32.wasm`, `science/daxpy_f64.wasm`, `db/*`
+- `local_dense`: `micro/local_dense_i32.wasm`
+- `operand_stack_dense`: `micro/operand_stack_dense_i32.wasm`
+- `call_dense`: `micro/call_dense_i32.wasm`, `vm/*`
+- `control_flow_dense`: `micro/control_flow_dense_i32.wasm`, `science/mandelbrot_f64.wasm`, `science/sieve_i32_2m.wasm`, `vm/*`
+- `int_dense` (tag): `micro/loop_i32.wasm`, `crypto/*`, `science/matmul_i32.wasm`
+- `float_dense` (tag): `micro/loop_f64.wasm`, `science/matmul_f64.wasm`, `science/nbody_f64.wasm`
+
 ## Quick start
 
-From `/tmp/u2bench`:
+From the repo root:
 
 ```bash
 python3 runbench.py \
   --add-uwvm2 --add-wasm3 --add-wamr --add-wasmtime \
   --runtime=int --runtime=jit --runtime=tiered \
   --mode=full --mode=lazy \
-  --metric=auto \
-  --root uwvm2bench \
+  --metric=internal \
+  --root wasm/corpus \
   --timeout 25 \
   --out logs/results.json \
   --plot --plot-out logs/results.png
@@ -94,3 +126,6 @@ If an engine is not in `PATH`, pass `--*-bin`:
 ```bash
 python3 runbench.py --add-wasmedge --wasmedge-bin /path/to/wasmedge ...
 ```
+
+Notes:
+- For WasmEdge installed via its env script, run `source ~/.wasmedge/env` in your shell before launching `runbench.py` so the dynamic libraries and `wasmedge` binary are discoverable.

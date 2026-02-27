@@ -140,6 +140,8 @@ def classify_bench(wasm_rel: str) -> tuple[str, list[str]]:
       - memory_dense
       - io_dense
       - syscall_dense
+      - local_dense
+      - operand_stack_dense
       - call_dense
       - control_flow_dense
       - unknown
@@ -154,6 +156,12 @@ def classify_bench(wasm_rel: str) -> tuple[str, list[str]]:
         tags.add(primary)
         return (primary, sorted(tags))
 
+    # Numeric flavor tags (orthogonal to primary kind).
+    if any(k in name for k in ("f32", "f64")):
+        tags.add("float_dense")
+    if any(k in name for k in ("i32", "i64", "u32", "u64")):
+        tags.add("int_dense")
+
     # Generated WASI corpus under wasm/corpus/.
     if rel.startswith("wasi/"):
         tags.add("wasi")
@@ -165,12 +173,26 @@ def classify_bench(wasm_rel: str) -> tuple[str, list[str]]:
 
     if rel.startswith("micro/"):
         tags.add("micro")
-        if "mem_sum" in name:
+        if "local_dense" in name:
+            tags.add("compute_dense")
+            return ret("local_dense")
+        if "operand_stack_dense" in name:
+            tags.add("compute_dense")
+            return ret("operand_stack_dense")
+        if "call_dense" in name:
+            tags.add("compute_dense")
+            return ret("call_dense")
+        if "control_flow_dense" in name:
+            tags.add("compute_dense")
+            return ret("control_flow_dense")
+        if "mem_sum" in name or "mem_fill" in name:
             return ret("memory_dense")
+        tags.add("compute_dense")
         return ret("compute_dense")
 
     if rel.startswith("crypto/"):
         tags.add("crypto")
+        tags.add("int_dense")
         return ret("compute_dense")
 
     if rel.startswith("science/"):
@@ -186,17 +208,19 @@ def classify_bench(wasm_rel: str) -> tuple[str, list[str]]:
 
     if rel.startswith("db/"):
         tags.add("db")
+        tags.add("int_dense")
         tags.add("memory_dense")
         tags.add("control_flow_dense")
         return ("memory_dense", sorted(tags))
 
     if rel.startswith("vm/"):
         tags.add("vm")
+        tags.add("int_dense")
         tags.add("control_flow_dense")
         tags.add("call_dense")
         return ("control_flow_dense", sorted(tags))
 
-    # uwvm2bench-style corpus (flat filenames).
+    # Legacy flat corpus (extreme few-variable microbenches).
     if name.startswith(("call", "inline")) or "call_" in name or name.startswith("bench_call"):
         return ret("call_dense")
     if (
@@ -229,6 +253,12 @@ def classify_bench(wasm_rel: str) -> tuple[str, list[str]]:
             "aabb",
         )
     ):
+        if name.startswith("local_") or "local_" in name:
+            tags.add("compute_dense")
+            return ret("local_dense")
+        if name.startswith(("deepstack", "inloop_deepstack", "stack_reduce", "keepstack")):
+            tags.add("compute_dense")
+            return ret("operand_stack_dense")
         return ret("compute_dense")
     if name in {"coremark.wasm", "python.wasm"}:
         tags.add("control_flow_dense")
@@ -509,13 +539,23 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--mode", action="append", choices=["full", "lazy"], default=[])
 
     # Corpus
-    ap.add_argument("--root", default="uwvm2bench", help="directory to scan for wasm files (relative to CWD ok)")
+    ap.add_argument("--root", default="wasm/corpus", help="directory to scan for wasm files (relative to CWD ok)")
     ap.add_argument("--timeout", type=float, default=25.0, help="timeout per run (seconds)")
     ap.add_argument("--max-wasm", type=int, default=0, help="limit number of wasm files (0 = all)")
     ap.add_argument(
         "--bench-kind",
         action="append",
-        choices=["compute_dense", "memory_dense", "io_dense", "syscall_dense", "call_dense", "control_flow_dense", "unknown"],
+        choices=[
+            "compute_dense",
+            "memory_dense",
+            "io_dense",
+            "syscall_dense",
+            "local_dense",
+            "operand_stack_dense",
+            "call_dense",
+            "control_flow_dense",
+            "unknown",
+        ],
         default=[],
         help="filter wasm corpus by primary bench kind (repeatable)",
     )
@@ -729,6 +769,8 @@ def main(argv: list[str]) -> int:
                 "memory_dense": "memory bandwidth / data-structure heavy",
                 "io_dense": "WASI filesystem I/O heavy",
                 "syscall_dense": "WASI syscall overhead heavy",
+                "local_dense": "local.get/local.set heavy",
+                "operand_stack_dense": "deep operand-stack manipulation heavy",
                 "call_dense": "function call overhead heavy",
                 "control_flow_dense": "branch/jump/switch heavy",
                 "unknown": "uncategorized",
