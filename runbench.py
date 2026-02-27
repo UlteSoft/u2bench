@@ -159,7 +159,7 @@ def classify_bench(wasm_rel: str) -> tuple[str, list[str]]:
     # Numeric flavor tags (orthogonal to primary kind).
     if any(k in name for k in ("f32", "f64")):
         tags.add("float_dense")
-    if any(k in name for k in ("i32", "i64", "u32", "u64")):
+    if any(k in name for k in ("i8", "u8", "i16", "u16", "i32", "i64", "u32", "u64")):
         tags.add("int_dense")
 
     # Generated WASI corpus under wasm/corpus/.
@@ -169,24 +169,63 @@ def classify_bench(wasm_rel: str) -> tuple[str, list[str]]:
         if "file_rw" in name or "small_io" in name:
             tags.add("io_dense")
             return ret("io_dense")
+        if "seek_read" in name:
+            tags.add("io_dense")
+            return ret("io_dense")
         return ret("syscall_dense")
 
     if rel.startswith("micro/"):
         tags.add("micro")
+        if "global_dense" in name:
+            tags.add("compute_dense")
+            tags.add("global_dense")
+            return ret("compute_dense")
+        if "select_dense" in name:
+            tags.add("compute_dense")
+            tags.add("operand_stack_dense")
+            return ret("compute_dense")
         if "local_dense" in name:
             tags.add("compute_dense")
             return ret("local_dense")
         if "operand_stack_dense" in name:
             tags.add("compute_dense")
             return ret("operand_stack_dense")
+        if "call_direct" in name:
+            tags.add("compute_dense")
+            return ret("call_dense")
         if "call_dense" in name:
             tags.add("compute_dense")
             return ret("call_dense")
+        if "call_indirect" in name or "indirect_call" in name:
+            tags.add("compute_dense")
+            return ret("call_dense")
+        if "br_table" in name:
+            tags.add("compute_dense")
+            return ret("control_flow_dense")
         if "control_flow_dense" in name:
             tags.add("compute_dense")
             return ret("control_flow_dense")
-        if "mem_sum" in name or "mem_fill" in name:
+        if "switch" in name:
+            tags.add("compute_dense")
+            return ret("control_flow_dense")
+        if "mem_sum" in name or "mem_fill" in name or "mem_copy" in name:
             return ret("memory_dense")
+        if name.startswith("mem_") or "mem_" in name:
+            return ret("memory_dense")
+        if "pointer_chase" in name:
+            return ret("memory_dense")
+        if "random_access" in name:
+            return ret("memory_dense")
+        if "memory_grow" in name:
+            return ret("memory_dense")
+        if "malloc" in name or "alloc" in name:
+            return ret("memory_dense")
+        if "rle_" in name or name.startswith("rle"):
+            tags.add("control_flow_dense")
+            return ret("memory_dense")
+        if "utf8" in name:
+            tags.add("control_flow_dense")
+            return ret("control_flow_dense")
         tags.add("compute_dense")
         return ret("compute_dense")
 

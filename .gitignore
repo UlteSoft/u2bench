@@ -20,4 +20,4 @@ cache/
 .DS_Store
 
 # WASI bench runtime artifacts
-wasm/corpus/u2bench_*
+u2bench_*
