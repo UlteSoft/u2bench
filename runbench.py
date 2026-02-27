@@ -17,16 +17,23 @@ from pathlib import Path
 from typing import Iterable, NamedTuple
 
 
+def variant_key(*, engine: str, runtime: str, mode: str, label: str = "") -> str:
+    if label:
+        return f"{engine}#{label}:{runtime}:{mode}"
+    return f"{engine}:{runtime}:{mode}"
+
+
 @dataclass(frozen=True)
 class EngineVariant:
     engine: str
     runtime: str
     mode: str
     bin: str
+    label: str = ""
 
     @property
     def key(self) -> str:
-        return f"{self.engine}:{self.runtime}:{self.mode}"
+        return variant_key(engine=self.engine, runtime=self.runtime, mode=self.mode, label=self.label)
 
 
 @dataclass
@@ -34,6 +41,7 @@ class RunResult:
     engine: str
     runtime: str
     mode: str
+    label: str
     wasm: str
     bench_kind: str
     bench_tags: list[str]
@@ -119,6 +127,106 @@ def which_or(path: str | None, default: str) -> str | None:
     if path:
         return path
     return shutil.which(default)
+
+
+def parse_labeled_bin(spec: str) -> tuple[str, str]:
+    spec = spec.strip()
+    if not spec:
+        raise SystemExit("empty --*-bin spec")
+    if "=" not in spec:
+        return ("", spec)
+    label, path = spec.split("=", 1)
+    label = label.strip()
+    path = path.strip()
+    if not label or not path:
+        raise SystemExit(f"invalid --*-bin spec (expected label=path): {spec!r}")
+    if ":" in label or "#" in label:
+        raise SystemExit(f"invalid label in --*-bin spec (must not contain ':' or '#'): {label!r}")
+    return (label, path)
+
+
+def resolve_executable(path: str, *, engine: str) -> str:
+    p = os.path.expanduser(path.strip())
+    if not p:
+        raise SystemExit(f"{engine} binary path is empty")
+
+    # Treat anything that looks like a path as a path.
+    if os.path.sep in p or p.startswith("."):
+        if Path(p).exists():
+            return p
+        raise SystemExit(f"{engine} binary not found: {p}")
+
+    found = shutil.which(p)
+    if found:
+        return found
+    if Path(p).exists():
+        return p
+    raise SystemExit(f"{engine} binary not found in PATH: {p}")
+
+
+def uniquify_bin_entries(engine: str, entries: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    if not entries:
+        return entries
+
+    seen: set[str] = set()
+    for label, _ in entries:
+        if not label:
+            continue
+        if label in seen:
+            raise SystemExit(f"duplicate label for {engine}: {label!r}")
+        seen.add(label)
+
+    if len(entries) == 1:
+        return entries
+
+    out: list[tuple[str, str]] = []
+    empty_used = False
+    for idx, (label, path) in enumerate(entries):
+        if label:
+            out.append((label, path))
+            continue
+        if not empty_used:
+            empty_used = True
+            out.append(("", path))
+            continue
+        auto = str(idx + 1)
+        if auto in seen:
+            auto = f"auto{idx + 1}"
+        base = auto
+        n = 2
+        while auto in seen or not auto:
+            auto = f"{base}_{n}"
+            n += 1
+        seen.add(auto)
+        out.append((auto, path))
+    return out
+
+
+def resolve_bin_entries(
+    *,
+    engine: str,
+    specs: list[str],
+    default_cmd: str | None = None,
+    default_path: str | None = None,
+) -> list[tuple[str, str]]:
+    entries: list[tuple[str, str]] = []
+    if specs:
+        for spec in specs:
+            label, path = parse_labeled_bin(spec)
+            entries.append((label, resolve_executable(path, engine=engine)))
+        return uniquify_bin_entries(engine, entries)
+
+    if default_path:
+        p = os.path.expanduser(default_path)
+        if Path(p).exists():
+            return [("", p)]
+
+    if default_cmd:
+        found = shutil.which(default_cmd)
+        if found:
+            return [("", found)]
+
+    return []
 
 
 def find_wasms(root: Path) -> list[Path]:
@@ -379,6 +487,7 @@ def supported_variants(
     *,
     engine: str,
     bin_path: str,
+    label: str = "",
     runtimes: list[str],
     modes: list[str],
 ) -> list[EngineVariant]:
@@ -420,7 +529,7 @@ def supported_variants(
         for m in modes:
             if m not in supp_m:
                 continue
-            variants.append(EngineVariant(engine=engine, runtime=r, mode=m, bin=bin_path))
+            variants.append(EngineVariant(engine=engine, runtime=r, mode=m, bin=bin_path, label=label))
     return variants
 
 
@@ -472,7 +581,7 @@ def metric_kind_and_value(*, wall_ms: float, internal_ms: float | None, metric: 
 def summarize(results: list[RunResult], baseline_key: str, *, metric: str) -> dict[str, object]:
     by_key: dict[str, list[RunResult]] = {}
     for r in results:
-        key = f"{r.engine}:{r.runtime}:{r.mode}"
+        key = variant_key(engine=r.engine, runtime=r.runtime, mode=r.mode, label=r.label)
         by_key.setdefault(key, []).append(r)
 
     # Compute per-config stats
@@ -535,10 +644,15 @@ def summarize(results: list[RunResult], baseline_key: str, *, metric: str) -> di
     return {"metric": metric, "stats": stats, "ratios_vs_baseline": ratios}
 
 
-def wasmtime_precompile_path(root: Path, wasm_rel: str) -> Path:
+def wasmtime_precompile_path(root: Path, wasm_rel: str, *, bin_path: str) -> Path:
     wasm_path = (root / wasm_rel).resolve()
-    st = wasm_path.stat()
-    key = f"{wasm_rel}|{st.st_size}|{st.st_mtime_ns}".encode("utf-8", errors="strict")
+    wasm_st = wasm_path.stat()
+    bin_real = Path(bin_path).resolve()
+    bin_st = bin_real.stat()
+    # Include the wasmtime binary identity so multi-binary comparisons don't share precompiled artifacts.
+    key = f"{bin_real}|{bin_st.st_size}|{bin_st.st_mtime_ns}|{wasm_rel}|{wasm_st.st_size}|{wasm_st.st_mtime_ns}".encode(
+        "utf-8", errors="strict"
+    )
     h = hashlib.sha256(key).hexdigest()[:20]
     out_dir = root / "cache" / "u2bench" / "wasmtime"
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -546,7 +660,7 @@ def wasmtime_precompile_path(root: Path, wasm_rel: str) -> Path:
 
 
 def run_wasmtime_full(bin_path: str, *, root: Path, wasm_rel: str, timeout_s: float) -> CmdOut:
-    out_path = wasmtime_precompile_path(root, wasm_rel)
+    out_path = wasmtime_precompile_path(root, wasm_rel, bin_path=bin_path)
     compile_cmd = [bin_path, "compile", wasm_rel, "-o", str(out_path)]
     run_cmd = [bin_path, "run", "--allow-precompiled", "--dir", ".", str(out_path)]
 
@@ -583,13 +697,13 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--add-wasmedge", action="store_true")
     ap.add_argument("--add-wavm", action="store_true")
 
-    ap.add_argument("--wasm3-bin", default=None)
-    ap.add_argument("--uwvm2-bin", default=None)
-    ap.add_argument("--wamr-bin", default=None)
-    ap.add_argument("--wasmtime-bin", default=None)
-    ap.add_argument("--wasmer-bin", default=None)
-    ap.add_argument("--wasmedge-bin", default=None)
-    ap.add_argument("--wavm-bin", default=None)
+    ap.add_argument("--wasm3-bin", action="append", default=[], help="repeatable; optionally label=PATH")
+    ap.add_argument("--uwvm2-bin", action="append", default=[], help="repeatable; optionally label=PATH")
+    ap.add_argument("--wamr-bin", action="append", default=[], help="repeatable; optionally label=PATH (iwasm)")
+    ap.add_argument("--wasmtime-bin", action="append", default=[], help="repeatable; optionally label=PATH")
+    ap.add_argument("--wasmer-bin", action="append", default=[], help="repeatable; optionally label=PATH")
+    ap.add_argument("--wasmedge-bin", action="append", default=[], help="repeatable; optionally label=PATH")
+    ap.add_argument("--wavm-bin", action="append", default=[], help="repeatable; optionally label=PATH")
 
     # Filters
     ap.add_argument("--runtime", action="append", choices=["int", "jit", "tiered"], default=[])
@@ -625,7 +739,7 @@ def main(argv: list[str]) -> int:
 
     # Output
     ap.add_argument("--out", default="logs/results.json")
-    ap.add_argument("--baseline", default="", help="baseline key, e.g. wasm3:int:full (default prefers wasm3:int:full)")
+    ap.add_argument("--baseline", default="", help="baseline key, e.g. wasm3:int:full or uwvm2#old:int:full (default prefers wasm3:int:full)")
     ap.add_argument(
         "--metric",
         choices=["wall", "internal", "auto"],
@@ -685,53 +799,56 @@ def main(argv: list[str]) -> int:
         raise SystemExit(f"no wasm files found under: {root}")
     probe_rel = os.path.relpath(wasms[0], root)
 
-    # Resolve binaries
-    bins: dict[str, str] = {}
-    wasm3_bin = which_or(args.wasm3_bin, "wasm3")
-    uwvm2_bin = which_or(args.uwvm2_bin, "uwvm")
-    wamr_bin = args.wamr_bin or "/Users/liyinan/Documents/MacroModel/src/wasm-micro-runtime/build/iwasm-fastinterp-clang/iwasm"
-    wasmtime_bin = which_or(args.wasmtime_bin, "wasmtime")
-    wasmer_bin = which_or(args.wasmer_bin, "wasmer")
-    wasmedge_bin = which_or(args.wasmedge_bin, "wasmedge")
-    wavm_bin = which_or(args.wavm_bin, "wavm")
+    # Resolve binaries (each engine can have multiple bins, e.g. two uwvm2 builds).
+    bins: dict[str, list[tuple[str, str]]] = {}
 
     if args.add_wasm3:
-        if not wasm3_bin:
+        entries = resolve_bin_entries(engine="wasm3", specs=args.wasm3_bin, default_cmd="wasm3")
+        if not entries:
             raise SystemExit("wasm3 not found: pass --wasm3-bin or install wasm3 in PATH")
-        bins["wasm3"] = wasm3_bin
+        bins["wasm3"] = entries
     if args.add_uwvm2:
-        if not uwvm2_bin:
+        entries = resolve_bin_entries(engine="uwvm2", specs=args.uwvm2_bin, default_cmd="uwvm")
+        if not entries:
             raise SystemExit("uwvm not found: pass --uwvm2-bin or install uwvm in PATH")
-        bins["uwvm2"] = uwvm2_bin
+        bins["uwvm2"] = entries
     if args.add_wamr:
-        if not Path(wamr_bin).exists():
-            raise SystemExit(f"iwasm not found: {wamr_bin} (pass --wamr-bin)")
-        bins["wamr"] = wamr_bin
+        default_iwasm = "/Users/liyinan/Documents/MacroModel/src/wasm-micro-runtime/build/iwasm-fastinterp-clang/iwasm"
+        entries = resolve_bin_entries(engine="wamr", specs=args.wamr_bin, default_path=default_iwasm, default_cmd="iwasm")
+        if not entries:
+            raise SystemExit("iwasm not found: pass --wamr-bin or install iwasm in PATH")
+        bins["wamr"] = entries
     if args.add_wasmtime:
-        if not wasmtime_bin:
+        entries = resolve_bin_entries(engine="wasmtime", specs=args.wasmtime_bin, default_cmd="wasmtime")
+        if not entries:
             raise SystemExit("wasmtime not found: pass --wasmtime-bin or install wasmtime in PATH")
-        bins["wasmtime"] = wasmtime_bin
+        bins["wasmtime"] = entries
     if args.add_wasmer:
-        if not wasmer_bin:
+        entries = resolve_bin_entries(engine="wasmer", specs=args.wasmer_bin, default_cmd="wasmer")
+        if not entries:
             raise SystemExit("wasmer not found: pass --wasmer-bin or install wasmer in PATH")
-        bins["wasmer"] = wasmer_bin
+        bins["wasmer"] = entries
     if args.add_wasmedge:
-        if not wasmedge_bin:
+        entries = resolve_bin_entries(engine="wasmedge", specs=args.wasmedge_bin, default_cmd="wasmedge")
+        if not entries:
             raise SystemExit("wasmedge not found: pass --wasmedge-bin or install wasmedge in PATH")
-        bins["wasmedge"] = wasmedge_bin
+        bins["wasmedge"] = entries
     if args.add_wavm:
-        if not wavm_bin:
+        entries = resolve_bin_entries(engine="wavm", specs=args.wavm_bin, default_cmd="wavm")
+        if not entries:
             raise SystemExit("wavm not found: pass --wavm-bin or install wavm in PATH")
-        bins["wavm"] = wavm_bin
+        bins["wavm"] = entries
 
     # Build variants
     variants: list[EngineVariant] = []
     skipped: list[str] = []
     for eng in selected:
-        vs = supported_variants(engine=eng, bin_path=bins[eng], runtimes=args.runtime, modes=args.mode)
-        if not vs:
+        eng_vs: list[EngineVariant] = []
+        for label, bin_path in bins.get(eng, []):
+            eng_vs.extend(supported_variants(engine=eng, bin_path=bin_path, label=label, runtimes=args.runtime, modes=args.mode))
+        if not eng_vs:
             skipped.append(eng)
-        variants.extend(vs)
+        variants.extend(eng_vs)
 
     # Preflight: drop variants that an engine explicitly reports as unsupported.
     pruned: list[str] = []
@@ -798,6 +915,7 @@ def main(argv: list[str]) -> int:
                     engine=v.engine,
                     runtime=v.runtime,
                     mode=v.mode,
+                    label=v.label,
                     wasm=rel,
                     bench_kind=bench_kind,
                     bench_tags=bench_tags,

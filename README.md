@@ -127,5 +127,23 @@ If an engine is not in `PATH`, pass `--*-bin`:
 python3 runbench.py --add-wasmedge --wasmedge-bin /path/to/wasmedge ...
 ```
 
+You can also pass the same `--*-bin` flag **multiple times** to compare different builds/commits of the same engine.
+Use `label=PATH` to keep results distinct:
+
+```bash
+python3 runbench.py \
+  --add-uwvm2 \
+  --uwvm2-bin old=/path/to/uwvm_old \
+  --uwvm2-bin new=/path/to/uwvm_new \
+  --add-wamr \
+  --wamr-bin fastinterp=/path/to/iwasm_fastinterp \
+  --wamr-bin classic=/path/to/iwasm_classic \
+  --runtime=int --mode=full \
+  --metric=internal
+```
+
+The summary keys become `uwvm2#old:int:full`, `uwvm2#new:int:full`, `wamr#fastinterp:int:full`, etc.
+You can select a baseline with `--baseline` using the same key format.
+
 Notes:
 - For WasmEdge installed via its env script, run `source ~/.wasmedge/env` in your shell before launching `runbench.py` so the dynamic libraries and `wasmedge` binary are discoverable.
