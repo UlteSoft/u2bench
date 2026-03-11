@@ -1,4 +1,4 @@
-# u2bench
+# wasm bench
 
 Minimal, CLI-driven wasm benchmark harness to compare multiple engines under the same wasm corpus.
 
